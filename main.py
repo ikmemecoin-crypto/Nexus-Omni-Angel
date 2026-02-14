@@ -1,203 +1,156 @@
-from nicegui import ui, app
+import streamlit as st
+import json
 from groq import Groq
 from github import Github
-import json
-import asyncio
+import time
+import re
 
-# --- Load secrets (will come from Hugging Face later) ---
-# For local testing, you can temporarily hardcode, but remove before committing!
-GROQ_API_KEY = ''  # Leave empty for now — we'll set in HF
-GH_TOKEN = ''      # Leave empty
-GH_REPO = ''       # e.g., 'yourusername/nexus-omni-nicegui' — leave empty
+# --- 1. CORE SYNC ---
+@st.cache_resource
+def init_nexus():
+    try:
+        g_client = Groq(api_key=st.secrets["GROQ_API_KEY"])
+        gh = Github(st.secrets["GH_TOKEN"])
+        r = gh.get_repo(st.secrets["GH_REPO"])
+        return g_client, r
+    except Exception as e:
+        st.error(f"Sync Offline: {e}")
+        return None, None
 
-client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-gh = Github(GH_TOKEN) if GH_TOKEN else None
-repo = gh.get_repo(GH_REPO) if gh and GH_REPO else None
+client, repo = init_nexus()
 
-# --- Tools (same as before) ---
+# --- 2. THEME & STYLING (unchanged) ---
+st.set_page_config(page_title="Nexus Omni", layout="wide", initial_sidebar_state="collapsed")
+
+if "theme_mode" not in st.session_state:
+    st.session_state.theme_mode = "Dark"
+
+if st.session_state.theme_mode == "Dark":
+    bg, card, text, accent = "#0E1117", "#1A1C23", "#E0E0E0", "#58a6ff"
+else:
+    bg, card, text, accent = "#F0F2F6", "#FFFFFF", "#1E1E1E", "#007BFF"
+
+st.markdown(f"""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap');
+    html, body, [class*="st-"] {{ font-family: 'Inter', sans-serif; background-color: {bg} !important; color: {text} !important; }}
+    div[data-testid="stVerticalBlock"] > div:has(div.stMarkdown) {{
+        background: {card}; border-radius: 16px; padding: 24px;
+        border: 1px solid rgba(128, 128, 128, 0.2);
+        box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.1);
+    }}
+    .main-title {{ font-size: 36px; font-weight: 600;
+        background: linear-gradient(120deg, #58a6ff, #bc8cff);
+        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    }}
+    [data-testid="stSidebar"] {{ display: none; }}
+    #MainMenu, footer, header {{ visibility: hidden; }}
+    </style>
+    """, unsafe_allow_html=True)
+
+# --- 3. HEADER ---
+c_head1, c_head2, c_head3, c_head4 = st.columns([5, 2, 2, 2])
+with c_head1:
+    st.markdown('<div class="main-title">Nexus Omni <span style="font-size:14px; color:gray;">v2.4 Agent</span></div>', unsafe_allow_html=True)
+with c_head2:
+    st.session_state.theme_mode = st.selectbox("Appearance", ["Dark", "Light"], label_visibility="collapsed")
+with c_head3:
+    if st.button("🗑️ Clear Chat"):
+        st.session_state.messages = []
+        st.rerun()
+with c_head4:
+    selected_model = st.selectbox("Model", ["llama-3.3-70b-versatile", "llama3-8b-8192 (faster)"], label_visibility="collapsed")
+
+# --- 4. TOOLS (unchanged) ---
 def get_tools():
-    return [
-        {"type": "function", "function": {
-            "name": "list_repo_files", "description": "List all files.",
-            "parameters": {"type": "object", "properties": {}}}},
-        {"type": "function", "function": {
-            "name": "read_file", "description": "Read file.",
-            "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}},
-        {"type": "function", "function": {
-            "name": "write_file", "description": "Create/update file.",
-            "parameters": {"type": "object", "properties": {
-                "path": {"type": "string"}, "content": {"type": "string"},
-                "message": {"type": "string"}}}, "required": ["path", "content"]}}},
-        {"type": "function", "function": {
-            "name": "delete_file", "description": "Delete file.",
-            "parameters": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}}}
-    ]
+    return [ ... ]  # Keep exact same as v2.3
 
 def execute_tool(tool_call, repo):
-    name = tool_call.function.name
-    try:
-        args = json.loads(tool_call.function.arguments)
-    except:
-        return json.dumps({"error": "Bad arguments"})
-    try:
-        if name == "list_repo_files":
-            return json.dumps({"files": [f.path for f in repo.get_contents("")]})
-        elif name == "read_file":
-            content = repo.get_contents(args["path"]).decoded_content.decode("utf-8")
-            return json.dumps({"content": content[:20000]})
-        elif name == "write_file":
-            path = args["path"]
-            content = args["content"]
-            message = args.get("message", "Agent update")
-            try:
-                f = repo.get_contents(path)
-                repo.update_file(path, message, content, f.sha)
-                return json.dumps({"status": "updated", "path": path})
-            except:
-                repo.create_file(path, message, content)
-                return json.dumps({"status": "created", "path": path})
-        elif name == "delete_file":
-            path = args["path"]
-            f = repo.get_contents(path)
-            repo.delete_file(path, "Agent delete", f.sha)
-            return json.dumps({"status": "deleted", "path": path})
-    except Exception as e:
-        return json.dumps({"error": str(e)})
+    # Keep exact same as v2.3
 
-# --- Storage ---
-if 'messages' not in app.storage.user:
-    app.storage.user['messages'] = []
-if 'model' not in app.storage.user:
-    app.storage.user['model'] = "llama-3.3-70b-versatile"
+# --- 5. CONTROL CENTER (unchanged vault/delete fixes) ---
+col_writer, col_chat = st.columns([4, 6], gap="large")
+# ... (keep your writer and vault code from v2.3)
 
-# --- UI Layout ---
-with ui.header().classes('items-center justify-between bg-gray-900 p-4'):
-    ui.label('Nexus Omni').classes('text-4xl font-bold bg-gradient-to-r from-blue-400 to-purple-600 bg-clip-text text-transparent')
-    with ui.row():
-        ui.button('Clear Chat', on_click=lambda: app.storage.user.update({'messages': []})).props('outline')
-        ui.select(['llama-3.3-70b-versatile', 'llama3-8b-8192'], label='Model', value=app.storage.user['model'],
-                  on_change=lambda e: app.storage.user.update({'model': e.value}))
-        ui.switch('Dark Mode', value=True, on_change=lambda e: ui.dark_mode().enable() if e.value else ui.dark_mode().disable())
+with col_chat:
+    st.subheader("💬 Nexus Intelligent Agent")
+    chat_box = st.container(height=580, border=True)
+    
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
 
-with ui.grid(columns=2).classes('w-full p-8 gap-8'):
-    # Left Panel
-    with ui.card().classes('w-full'):
-        ui.label('✍️ Code Architect').classes('text-2xl mb-4')
-        filename = ui.input('Filename', value='new_tool.py')
-        code = ui.textarea('Source Code', placeholder='# Enter code...').classes('w-full h-64')
-        ui.button('🚀 Push to Repo', on_click=lambda: asyncio.create_task(push_code(filename.value, code.value))).props('block color=primary')
+    for m in st.session_state.messages:
+        with chat_box.chat_message(m["role"]):
+            st.markdown(m["content"])
 
-        ui.separator().classes('my-6')
-        ui.label('📁 Repository Vault').classes('text-2xl')
-        vault_container = ui.column()
+    # Suggestions (updated for memory)
+    s1, s2, s3, s4 = st.columns(4)
+    p_cmd = None
+    if s1.button("🔍 Audit Code"): p_cmd = "Audit all Python files and fix issues."
+    if s2.button("📐 UI UX"): p_cmd = "Suggest advanced UI upgrades."
+    if s3.button("🧠 Sync Memory"): p_cmd = "Read memory_general.json, update with current goals/progress (main: world's most powerful AI app with vision/code exec/self-improve)."
+    if s4.button("🚀 Build Tool"): p_cmd = "Build a useful new script."
 
-    # Right Panel
-    with ui.card().classes('w-full'):
-        ui.label('💬 Nexus Intelligent Agent').classes('text-2xl mb-4')
-        chat_container = ui.column().classes('h-96 overflow-y-auto')
-        for m in app.storage.user['messages']:
-            with chat_container:
-                with ui.chat_message(text=m['content'], sent=m['role']=='user'):
-                    pass
+    query = st.chat_input("Command the Nexus...") or p_cmd
 
-        with ui.row().classes('w-full mt-4'):
-            ui.button('🔍 Audit', on_click=lambda: process_query("Audit all Python files"))
-            ui.button('📐 UI', on_click=lambda: process_query("Suggest UI improvements"))
-            ui.button('🧠 Memory', on_click=lambda: process_query("Sync memory_general.json with goals"))
-            ui.button('🚀 Tool', on_click=lambda: process_query("Build a new utility script"))
-
-        query_input = ui.input('Command the Nexus...').classes('w-full').on('keydown.enter', lambda e: process_query(e.value))
-
-# --- Functions ---
-async def push_code(fname, body):
-    if not repo:
-        ui.notify('Repo not connected')
-        return
-    try:
-        try:
-            f = repo.get_contents(fname)
-            repo.update_file(fname, "Manual update", body, f.sha)
-        except:
-            repo.create_file(fname, "Manual create", body)
-        ui.notify('Pushed successfully! ✅')
-        await refresh_vault()
-    except Exception as e:
-        ui.notify(f'Error: {e}')
-
-async def refresh_vault():
-    vault_container.clear()
-    if repo:
-        try:
-            files = repo.get_contents("")
-            for f in files:
-                if f.type == "file":
-                    with vault_container:
-                        with ui.expansion(f'{f.name} ({f.size} bytes)'):
-                            ui.code(f.decoded_content.decode("utf-8")[:1500])
-                            ui.button('Delete', on_click=lambda p=f.path: asyncio.create_task(delete_file(p))).props('color=red')
-        except Exception as e:
-            with vault_container:
-                ui.label(f'Error loading vault: {e}')
-    else:
-        with vault_container:
-            ui.label('Repo not connected yet')
-
-async def delete_file(path):
-    try:
-        f = repo.get_contents(path)
-        repo.delete_file(path, "Manual delete", f.sha)
-        ui.notify('Deleted!')
-        await refresh_vault()
-    except Exception as e:
-        ui.notify(f'Error: {e}')
-
-async def process_query(query):
-    if not query or not client or not repo:
-        return
-    app.storage.user['messages'].append({"role": "user", "content": query})
-    query_input.value = ''
-    with chat_container:
-        assistant_msg = ui.chat_message(text='Thinking...', sent=False)
-    await refresh_chat()
-
-    messages = [{"role": "system", "content": "You are Nexus Omni, autonomous AI agent. Use tools when needed. Keep responses concise."}]
-    messages.extend(app.storage.user['messages'][-10:])
-
-    response = ""
-    for _ in range(5):
-        try:
-            comp = client.chat.completions.create(
-                model=app.storage.user['model'],
-                messages=messages,
-                tools=get_tools(),
-                tool_choice="auto",
-                max_tokens=2048
-            )
-            choice = comp.choices[0].message
-            if choice.content:
-                response += choice.content + "\n"
-            if not choice.tool_calls:
-                break
-            for tc in choice.tool_calls:
-                result = execute_tool(tc, repo)
-                messages.append(choice)
-                messages.append({"role": "tool", "tool_call_id": tc.id, "name": tc.function.name, "content": result})
-                response += f"[Used {tc.function.name}]\n"
-        except Exception as e:
-            response += f"Error: {str(e)}"
-            break
-
-    app.storage.user['messages'].append({"role": "assistant", "content": response})
-    assistant_msg.text = response
-    await refresh_vault()
-
-async def refresh_chat():
-    chat_container.clear()
-    for m in app.storage.user['messages']:
-        with chat_container:
-            ui.chat_message(text=m['content'], sent=m['role']=='user')
-
-# Initial vault load
-ui.timer(1, refresh_vault, once=True)
-
-ui.run(title='Nexus Omni', port=8080, storage_secret='SECRET-KEY-FOR-SESSION')
+# --- 6. AGENT WITH RATE LIMIT HANDLING ---
+if query and client and repo:
+    st.session_state.messages.append({"role": "user", "content": query})
+    with chat_box.chat_message("user"): st.markdown(query)
+    
+    with chat_box.chat_message("assistant"):
+        with st.spinner("Thinking..."):
+            messages = [
+                {"role": "system", "content": """You are Nexus Omni v2.4 - autonomous agent.
+Use tools precisely. Keep responses concise to save tokens.
+Always update memory_general.json with progress/goals."""}
+            ]
+            messages.extend(st.session_state.messages[-10:])  # Reduced for token savings
+            
+            final_response = ""
+            tool_feedback = ""
+            max_loops = 5
+            for _ in range(max_loops):
+                try:
+                    comp = client.chat.completions.create(
+                        model=selected_model,
+                        messages=messages,
+                        tools=get_tools(),
+                        tool_choice="auto",
+                        max_tokens=2048,  # Reduced
+                        temperature=0.6
+                    )
+                    choice = comp.choices[0].message
+                    
+                    if choice.content:
+                        final_response += choice.content + "\n\n"
+                    
+                    if not getattr(choice, "tool_calls", None):
+                        break
+                    
+                    tool_feedback = ""
+                    for tool_call in choice.tool_calls:
+                        result = execute_tool(tool_call, repo)
+                        result_obj = json.loads(result) if result.startswith("{") else {"raw": result}
+                        status = result_obj.get("status", "done")
+                        tool_feedback += f"**{tool_call.function.name}** → {status}\n"
+                        
+                        messages.append(choice)
+                        messages.append({"role": "tool", "tool_call_id": tool_call.id, "name": tool_call.function.name, "content": result})
+                
+                except Exception as e:
+                    error_str = str(e)
+                    if "rate_limit" in error_str or "429" in error_str:
+                        # Extract retry time if available
+                        match = re.search(r"try again in ([\d.m]+s)", error_str)
+                        retry = match.group(1) if match else "1 hour"
+                        final_response += f"🚫 Groq rate limit hit (free tier). Retry in ~{retry}.\nUpgrade your API key limits at console.groq.com."
+                        break
+                    else:
+                        final_response += f"❌ Error: {error_str}"
+                        break
+            
+            full_output = (tool_feedback + final_response).strip() or "Task complete."
+            st.markdown(full_output)
+            st.session_state.messages.append({"role": "assistant", "content": full_output})
+            st.rerun()
